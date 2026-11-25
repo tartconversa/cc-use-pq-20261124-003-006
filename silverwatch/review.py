@@ -10,6 +10,19 @@ from silverwatch import cases
 from silverwatch.contracts import Case, CaseEvidence, Remediation, ReviewDecision
 from silverwatch.errors import conflict, invalid, missing
 from silverwatch.ledger import append, current_entities, latest
+from silverwatch.timeutil import current_instant, parse_instant
+
+
+def _management_time(closed_at) -> datetime:
+    """管理动作的观察时间。
+
+    显式给出时间时严格使用该时间；未给出时对齐到当前 UTC 业务日零点，
+    与政策版本按日期生效的边界保持一致，避免“当天零点截点看不到当天办结”
+    这类由真实时钟时分秒引起的竞态。
+    """
+    if closed_at is not None:
+        return parse_instant(closed_at, field="closed_at")
+    return current_instant().replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def open_case(db: Connection, body: Case, revision: int, source_ref: str) -> dict:
@@ -47,7 +60,8 @@ def case_status(db: Connection, case_id: str, *, cut: int | None = None) -> dict
     }
 
 
-def close(db: Connection, case_id: str, expected_finding: str, revision: int) -> dict:
+def close(db: Connection, case_id: str, expected_finding: str, revision: int,
+          closed_at: datetime | str | None = None) -> dict:
     state = case_status(db, case_id)
     if state["finding"]["finding"] != expected_finding:
         raise conflict("finding_changed", "案件核实结果已变化",
@@ -56,7 +70,7 @@ def close(db: Connection, case_id: str, expected_finding: str, revision: int) ->
         if not state["remediations"] or any(item["status"] != "verified" for item in state["remediations"]):
             raise conflict("remediation_open", "已确认案件仍有未核验整改")
     body = {**state["case"], "status": "closed"}
-    observed = datetime.now(timezone.utc)
+    observed = _management_time(closed_at)
     return append(db, "case", case_id, revision, "case-management", body, observed)
 
 

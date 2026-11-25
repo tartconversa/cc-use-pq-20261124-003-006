@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS bulletin(
  analysis_id TEXT NOT NULL,revision INTEGER NOT NULL,analysis_digest TEXT NOT NULL,
  result TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(analysis_id,revision)
 );
+CREATE TABLE IF NOT EXISTS policy_version(
+ policy_id TEXT NOT NULL,version INTEGER NOT NULL,effective_from TEXT NOT NULL,
+ effective_to TEXT,policy TEXT NOT NULL,meta TEXT NOT NULL,digest TEXT NOT NULL,
+ created_at TEXT NOT NULL,PRIMARY KEY(policy_id,version)
+);
+CREATE INDEX IF NOT EXISTS policy_version_effective ON policy_version(policy_id,effective_from);
 PRAGMA user_version=1;
 """
 

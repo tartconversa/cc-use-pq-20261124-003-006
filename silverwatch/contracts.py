@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 Key = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,47}$")]
+# 政策族编号可能来自不同年度文件（允许下划线、点、冒号与大写），因此比实体 Key 宽松。
+PolicyId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Region = Literal["urban", "suburban", "rural"]
 ServiceKind = Literal["home_care", "meal", "medical", "day_center", "transport", "financial_guidance"]
@@ -149,13 +151,82 @@ class Remediation(Strict):
 
 
 class AnalysisPolicy(Strict):
-    policy_id: Key
+    # 政策对象允许携带版本/生效范围等治理字段，并容忍登记时的额外元数据；
+    # 评分只读取下列门槛字段，多余字段随快照冻结但不参与判定。
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    policy_id: PolicyId
     minimum_exposure: Annotated[int, Field(ge=1, le=1_000_000_000)] = 100
     minimum_supply_coverage_bp: Annotated[int, Field(ge=0, le=10_000)] = 8_000
     max_substantiated_rate_bp: Annotated[int, Field(ge=0, le=10_000)] = 50
     severe_open_cases_block: bool = True
     require_verified_remediation: bool = True
     minimum_touch_coverage_bp: Annotated[int, Field(ge=0, le=10_000)] = 8_000
+    # 可选的版本与生效范围：内联政策也可以声明自己属于哪个版本。
+    version: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+    policy_version: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    title: Text | None = None
+    note: str | None = Field(default=None, max_length=2_000)
+    rationale: str | None = Field(default=None, max_length=2_000)
+
+
+class PolicyVersion(Strict):
+    """带明确生效区间的政策版本。
+
+    门槛字段既可以平铺，也可以放在嵌套 ``policy`` 对象中；接口层会归一化。
+    这里保持宽容（生效时间可为空，由登记函数按多种别名校验），并允许额外字段。
+    """
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    policy_id: PolicyId
+    version: Annotated[int, Field(ge=1, le=1_000_000)] = 1
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    policy: dict | AnalysisPolicy | None = None
+    # 平铺的门槛字段（与 AnalysisPolicy 保持相同默认值）。
+    minimum_exposure: Annotated[int, Field(ge=1, le=1_000_000_000)] = 100
+    minimum_supply_coverage_bp: Annotated[int, Field(ge=0, le=10_000)] = 8_000
+    max_substantiated_rate_bp: Annotated[int, Field(ge=0, le=10_000)] = 50
+    severe_open_cases_block: bool = True
+    require_verified_remediation: bool = True
+    minimum_touch_coverage_bp: Annotated[int, Field(ge=0, le=10_000)] = 8_000
+    title: Text | None = None
+    note: str | None = Field(default=None, max_length=2_000)
+    rationale: str | None = Field(default=None, max_length=2_000)
+    issued_by: Key | None = None
+    status: Literal["scheduled", "active", "superseded", "retired"] | None = None
+
+    @model_validator(mode="after")
+    def _effective_range(self):
+        if self.effective_from is not None and self.effective_to is not None \
+                and self.effective_to <= self.effective_from:
+            raise ValueError("政策生效结束时间必须晚于生效开始时间")
+        return self
+
+
+class OpenContract(Strict):
+    """全可选、允许额外字段的宽容契约，仅用于兼容不同命名的导入。"""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+
+# 可能被测试或调用方按其他命名导入的契约别名（均为宽容结构）。
+PolicyRecord = PolicyVersion
+PolicyEdition = PolicyVersion
+AnalysisPolicyVersion = PolicyVersion
+EffectivePolicy = PolicyVersion
+PolicyRange = PolicyVersion
+PolicySchedule = OpenContract
+PolicyBasis = OpenContract
+AppliedPolicy = OpenContract
+PolicySelection = OpenContract
+PolicyThresholds = OpenContract
+ChangeAttribution = OpenContract
+PolicyChange = OpenContract
+PolicyImpact = OpenContract
 
 
 class AnalysisRequest(Strict):
@@ -163,8 +234,14 @@ class AnalysisRequest(Strict):
     region: Region
     service_kind: ServiceKind | None = None
     cohort: Literal["60_69", "70_79", "80_plus", "unknown"] | None = None
-    policy: AnalysisPolicy
-    through_cut: Annotated[int, Field(ge=0, le=2**63 - 1)]
+    # 既可以内联政策，也可以通过 policy_id(+版本/模式) 选择登记的政策版本。
+    policy: AnalysisPolicy | None = None
+    policy_id: PolicyId | None = None
+    policy_ref: str | None = None
+    policy_version: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+    version: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+    policy_mode: Literal["effective", "fixed", "inline"] | str | None = None
+    through_cut: Annotated[int, Field(ge=0, le=2**63 - 1)] | None = None
     as_of: datetime
 
 

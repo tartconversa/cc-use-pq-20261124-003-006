@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 from sqlite3 import Connection
 
-from silverwatch import cases
+from silverwatch import cases, policies
 from silverwatch.digest import digest
 from silverwatch.errors import conflict, invalid, missing
 from silverwatch.storage import encode
@@ -15,8 +15,10 @@ def store_analysis(db: Connection, analysis_id: str, cut: int, as_of: datetime,
     revision = (db.execute("SELECT COALESCE(MAX(revision),0)+1 FROM analysis WHERE analysis_id=?",
                            (analysis_id,)).fetchone()[0])
     fingerprint = digest(document)
+    policy_json = policies.dump_policy(policy) if isinstance(policy, policies.AnalysisPolicy) \
+        else policy.model_dump(mode="json", exclude_none=True)
     db.execute("INSERT INTO analysis VALUES(?,?,?,?,?,?,?,?,?)",
-               (analysis_id, revision, cut, as_of.isoformat(), encode(policy.model_dump(mode="json")),
+               (analysis_id, revision, cut, as_of.isoformat(), encode(policy_json),
                 encode(document), fingerprint, "draft", datetime.now(timezone.utc).isoformat()))
     return {"analysis_id": analysis_id, "revision": revision, "cut": cut,
             "digest": fingerprint, "state": "draft"}

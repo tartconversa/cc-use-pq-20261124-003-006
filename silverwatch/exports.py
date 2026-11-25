@@ -48,6 +48,9 @@ def publication_manifest(db: Connection, analysis_id: str, edition: int | None =
             "bulletin_digest": bulletin["bulletin_digest"],
             "region": body["region"], "service_kind": body["service_kind"],
             "cohort": body["cohort"], "cut": body["cut"], "as_of": body["as_of"],
+            "policy_id": body.get("policy", {}).get("policy_id"),
+            "policy_version": (body.get("policy_basis") or {}).get("version"),
+            "policy_mode": (body.get("policy_basis") or {}).get("mode"),
             "area_count": len(body["areas"]),
             "risk_area_count": len(body["risk_flags"]),
             "case_counts": body["case_counts"], "published_at": bulletin["published_at"]}

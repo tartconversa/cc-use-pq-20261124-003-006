@@ -35,11 +35,16 @@ def analysis_inputs(db: Connection, analysis_id: str, revision: int | None = Non
                           (cut, row["as_of"])).fetchall()
     approvals = db.execute("SELECT role,reviewer,digest FROM approvals WHERE analysis_id=? AND analysis_digest=? ORDER BY role",
                             (analysis_id, row["digest"])).fetchall()
+    import json as _json
+
+    document = _json.loads(row["document"])
     return {"analysis_id": analysis_id, "revision": row["revision"], "cut": cut,
             "as_of": as_of.isoformat(), "captured_event_counts": [dict(item) for item in snapshot],
             "source_revision_examples": {kind: revisions(db, kind, entity_id, cut=cut)
                 for kind, entity_id in _representative_entities(db, cut)},
             "approval_roles": [dict(item) for item in approvals],
+            "policy": _json.loads(row["policy"]),
+            "policy_basis": document.get("policy_basis"),
             "analysis_digest": row["digest"], "state": row["state"]}
 
 

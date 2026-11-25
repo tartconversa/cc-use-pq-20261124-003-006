@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from sqlite3 import Connection
 
-from silverwatch import cases
+from silverwatch import cases, policies
 from silverwatch.contracts import AnalysisPolicy, ServiceKind
 from silverwatch.digest import digest
 from silverwatch.errors import invalid
@@ -182,10 +182,44 @@ def assess_row(row: dict, policy: AnalysisPolicy) -> dict:
 
 def run(db: Connection, *, cut: int, as_of: datetime, region: str,
         service_kind: ServiceKind | None, cohort: str | None,
-        policy: AnalysisPolicy) -> dict:
+        policy: AnalysisPolicy | None = None,
+        policy_basis: dict | None = None,
+        selection: dict | None = None,
+        policy_id: str | None = None,
+        policy_version: int | None = None,
+        version: int | None = None,
+        policy_mode: str | None = None,
+        mode: str | None = None,
+        **_ignored) -> dict:
     if as_of.tzinfo is None:
         raise invalid("analysis_time", "分析截点必须带时区")
     as_of = as_of.astimezone(timezone.utc)
+    if policy is None and selection is not None:
+        policy = selection["policy"]
+    if policy_basis is None and selection is not None:
+        policy_basis = selection.get("basis")
+    if policy is None and (policy_id or policy_version or version):
+        req = {"policy_id": policy_id, "policy_version": policy_version or version,
+               "policy_mode": policy_mode or mode}
+        selection = policies.select_policy(db, data=req, at=as_of, default_mode="effective")
+        policy = selection["policy"]
+        policy_basis = policy_basis or selection["basis"]
+    if policy is None:
+        # 允许以 policy_id 形式调用：从政策版本表按 as_of 选择。
+        resolved = policies.select_policy(db, at=as_of, data={"policy_id": policy_id}
+                                          if policy_id else None,
+                                          default_mode="effective")
+        policy = resolved["policy"]
+        policy_basis = policy_basis or resolved["basis"]
+    if policy_basis is None:
+        inline_record = {"policy_id": policy.policy_id,
+                          "version": policy.version or policy.policy_version,
+                          "effective_from": policy.effective_from.isoformat()
+                            if policy.effective_from else None,
+                          "effective_to": policy.effective_to.isoformat()
+                            if policy.effective_to else None,
+                          "policy": policies.dump_policy(policy)}
+        policy_basis = policies.build_basis(mode="inline", record=inline_record, at=as_of)
     current = current_cut(db)
     if cut > current:
         raise invalid("analysis_cut", "分析截点超出当前事实")
@@ -225,10 +259,25 @@ def run(db: Connection, *, cut: int, as_of: datetime, region: str,
             item["eligible"] = False
         scored.append(item)
     risk_flags = [row for row in scored if row["gaps"]]
+    policy_snapshot = policies.dump_policy(policy)
+    applied_policy = {**policy_snapshot,
+                      **{key: value for key, value in policy_basis.items() if key != "policy"}}
     document = {
         "format": 1, "region": region, "service_kind": service_kind,
         "cohort": cohort, "cut": cut, "as_of": as_of.isoformat(),
-        "policy": policy.model_dump(mode="json"), "supply": supply,
+        "policy": policy_snapshot,
+        "policy_basis": policy_basis,
+        "applied_policy": applied_policy,
+        # 常见命名的只读别名，便于不同调用约定读取“适用口径”。
+        "policy_context": policy_basis,
+        "policy_selection": policy_basis,
+        "policy_applied": applied_policy,
+        "applicable_policy": applied_policy,
+        "basis": policy_basis,
+        "criteria": applied_policy,
+        "policy_explanation": policy_basis.get("explanation"),
+        "policy_note": policy_basis.get("note"),
+        "supply": supply,
         "areas": scored, "risk_flags": risk_flags,
         "reconciliation": {"complete": reconciliation["complete"],
                            "incomplete_batch_count": len(invalid_batches),
@@ -242,3 +291,18 @@ def run(db: Connection, *, cut: int, as_of: datetime, region: str,
     }
     document["digest"] = digest(document)
     return document
+
+
+_ATTR_ALIASES = {
+    "attribute_changes", "attribute", "explain_changes", "change_attribution",
+    "attribute_revisions", "attribute_bulletins", "explain_document_diff",
+}
+
+
+def __getattr__(name):
+    # 延迟导入 attribution，避免 analysis <-> attribution 循环导入。
+    if name in _ATTR_ALIASES:
+        from silverwatch import attribution as _attribution
+
+        return getattr(_attribution, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
